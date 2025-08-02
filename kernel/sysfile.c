@@ -301,6 +301,36 @@ create(char *path, short type, short major, short minor)
   return 0;
 }
 
+struct inode*
+open_symlink(struct inode* ip){
+  int count=0;
+  char target[MAXPATH];
+  struct inode* dp=ip;
+  while (dp->type == T_SYMLINK)
+  {
+    if (count+1 > 50) {
+        iunlockput(dp);
+        end_op();
+        return 0;
+    }
+    if (readi(dp, 0, (uint64)&target, 0, sizeof(target)) != sizeof(target)||count>10)
+    {
+      iunlockput(dp);
+      end_op();
+      return 0;
+    }
+    iunlockput(dp);
+    dp=namei(target);
+    if(dp==0){
+      end_op();
+      return 0;
+    }
+    count++;
+    ilock(dp);
+  }
+  return dp;
+}
+
 uint64
 sys_open(void)
 {
@@ -328,6 +358,10 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+    if((omode& O_NOFOLLOW)==0 && ip->type==T_SYMLINK){
+      if ((ip = open_symlink(ip))==0)
+        {return -1;}
+    }
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -501,5 +535,29 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+// syscall for int symlink(char *target, char *path);
+uint64
+sys_symlink(void){
+  char path[MAXPATH];
+  char target[MAXPATH];
+  struct inode *ip;
+
+  begin_op();
+  if (argstr(0, target, MAXPATH) < 0||argstr(1, path, MAXPATH) < 0 || (ip = create(path, T_SYMLINK, 0, 0)) == 0)
+  {
+    end_op();
+    return -1;
+  }
+  if (writei(ip, 0, (uint64)&target, 0, sizeof(target)) != sizeof(target))
+  {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
   return 0;
 }
