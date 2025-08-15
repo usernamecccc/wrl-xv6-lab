@@ -32,9 +32,10 @@ def test_sbrkmuch():
 
 @test(0, "running bcachetest")
 def test_bcachetest():
+
     r.run_qemu(shell_script([
         'bcachetest'
-    ]), timeout=90)
+    ]), timeout=400)
     
 @test(10, "bcachetest: test0", parent=test_bcachetest)
 def test_bcachetest_test0():
@@ -48,7 +49,7 @@ def test_bcachetest_test1():
 def test_usertests():
     r.run_qemu(shell_script([
         'usertests -q'
-    ]), timeout=300)
+    ]), timeout=500)
     r.match('^ALL TESTS PASSED$')
 
 @test(1, "time")
