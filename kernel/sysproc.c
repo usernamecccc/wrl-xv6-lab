@@ -6,6 +6,32 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"   
+
+extern uint64 getfreemem(void);
+extern int getnproc(void);
+
+uint64
+sys_sysinfo(void)
+{
+  struct proc *p = myproc();
+  struct sysinfo si;
+  uint64 uaddr;   // 用户传入的指针（用户地址空间）
+
+  // 1) 取参数：第 0 个参数是用户态的 struct sysinfo* 指针
+  if (argaddr(0, &uaddr) < 0)
+    return -1;
+
+  // 2) 收集数据
+  si.freemem = getfreemem();   // 空闲内存字节数
+  si.nproc   = getnproc();     // 非 UNUSED 的进程数
+
+  // 3) 拷回用户空间
+  if (copyout(p->pagetable, uaddr, (char*)&si, sizeof(si)) < 0)
+    return -1;
+
+  return 0;
+}
 
 uint64
 sys_exit(void)
@@ -95,3 +121,14 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_trace(void)
+{
+  int mask;
+  if(argint(0, &mask) < 0)
+    return -1;
+  myproc()->tracemask = mask;
+  return 0;
+}
+
