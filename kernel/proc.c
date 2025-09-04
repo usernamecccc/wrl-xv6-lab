@@ -101,6 +101,7 @@ allocpid() {
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
+// kernel/proc.c
 static struct proc*
 allocproc(void)
 {
@@ -127,6 +128,16 @@ found:
     return 0;
   }
 
+  // ---------- 新增：分配并初始化 usyscall 页 ----------
+  if((p->usyscall = (struct usyscall *)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  memset(p->usyscall, 0, PGSIZE);
+  p->usyscall->pid = p->pid;
+  // ---------- 新增结束 ----------
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -144,15 +155,21 @@ found:
   return p;
 }
 
+
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
 static void
 freeproc(struct proc *p)
 {
-  if(p->trapframe)
+  if(p->trapframe){
     kfree((void*)p->trapframe);
-  p->trapframe = 0;
+    p->trapframe = 0;
+  }
+  if(p->usyscall){
+    kfree((void*)p->usyscall);
+    p->usyscall=0;
+  }
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -196,8 +213,22 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
+#ifdef LAB_PGTBL
+  // 注意：有的版本需要物理地址；如需严格物理地址，改为：
+  // (uint64)kvmpa((uint64)p->usyscall)
+  if(mappages(pagetable, USYSCALL, PGSIZE,
+              (uint64)(p->usyscall),    // 这页是 allocproc() 里 kalloc 的
+              PTE_R | PTE_U) < 0){
+    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+    uvmunmap(pagetable, TRAPFRAME, 1, 0);
+    uvmfree(pagetable, 0);
+    return 0;
+  }
+#endif
+
   return pagetable;
 }
+
 
 // Free a process's page table, and free the
 // physical memory it refers to.
@@ -206,8 +237,12 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+#ifdef LAB_PGTBL
+  uvmunmap(pagetable, USYSCALL, 1, 0);
+#endif
   uvmfree(pagetable, sz);
 }
+
 
 // a user program that calls exec("/init")
 // od -t xC initcode

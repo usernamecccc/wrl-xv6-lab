@@ -7,6 +7,8 @@
 #include "spinlock.h"
 #include "proc.h"
 
+extern pte_t* walk(pagetable_t pagetable, uint64 va, int alloc);
+
 uint64
 sys_exit(void)
 {
@@ -77,13 +79,53 @@ sys_sleep(void)
 
 
 #ifdef LAB_PGTBL
-int
+// sys_pgaccess(base, len, user_mask)
+// - base: 从哪个用户虚拟地址开始检查
+// - len:  要检查多少页（建议最多64）
+// - user_mask: 用户缓冲区地址，用来接收位图结果（uint64）
+uint64
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
+  uint64 base;        // arg0
+  int len;            // arg1
+  uint64 user_mask;   // arg2
+
+  if (argaddr(0, &base) < 0 || argint(1, &len) < 0 || argaddr(2, &user_mask) < 0)
+    return -1;
+
+  if (len < 0)
+    return -1;
+  if (len > 64)
+    len = 64;                 // 上限64页
+
+  struct proc *p = myproc();
+  uint64 mask = 0;
+
+  for (int i = 0; i < len; i++) {
+    uint64 va = PGROUNDDOWN(base + (uint64)i * PGSIZE);
+    pte_t *pte = walk(p->pagetable, va, 0);
+    if (pte == 0)             // 未映射：对应位为0，跳过
+      continue;
+    if ((*pte & PTE_V) == 0)  // 无效：跳过
+      continue;
+    if ((*pte & PTE_U) == 0)  // 非用户页：跳过
+      continue;
+
+    if (*pte & PTE_A) {
+      mask |= (1ULL << i);    // 置位（注意 1ULL，避免高位截断）
+      *pte &= ~PTE_A;         // 清除访问位，保证“增量”语义
+    }
+  }
+
+  int bytes = (len + 7) / 8;
+  if (bytes == 0) bytes = 1; 
+  if (copyout(p->pagetable, user_mask, (char *)&mask, bytes) < 0)
+    return -1;
+
   return 0;
 }
 #endif
+
 
 uint64
 sys_kill(void)

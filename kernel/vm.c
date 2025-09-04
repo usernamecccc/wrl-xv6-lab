@@ -6,6 +6,44 @@
 #include "defs.h"
 #include "fs.h"
 
+
+
+#ifdef LAB_PGTBL
+// 递归遍历并打印页表。
+// depth 表示当前层级，用来控制缩进。
+static void
+vmprintwalk(pagetable_t pagetable, int depth)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) == 0)
+      continue;  // 无效条目不打印
+
+    // 打印缩进
+    for (int n = 0; n < depth; n++)
+      printf(" ..");
+
+    // 打印本级 PTE：索引、PTE 值、以及从 PTE 提取的物理地址
+    printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+
+    // 如果是“指向下一级页表”的 PTE（V=1 且 R/W/X 都为 0），继续深入
+    if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      uint64 child = PTE2PA(pte);
+      vmprintwalk((pagetable_t)child, depth + 1);
+    }
+  }
+}
+
+// 对外接口：打印一个顶层页表
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprintwalk(pagetable, 1);
+}
+#endif
+
+
 /*
  * the kernel's page table.
  */

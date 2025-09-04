@@ -9,6 +9,12 @@ struct sleeplock;
 struct stat;
 struct superblock;
 
+// kernel/defs.h
+#ifdef LAB_PGTBL
+void            vmprint(pagetable_t pagetable);
+#endif
+
+
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);
