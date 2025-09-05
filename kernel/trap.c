@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+pte_t* walk(pagetable_t pagetable, uint64 va, int alloc);
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -41,47 +43,92 @@ usertrap(void)
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
 
-  // send interrupts and exceptions to kerneltrap(),
-  // since we're now in the kernel.
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
-  
-  // save user program counter.
+
+  // save user pc
   p->trapframe->epc = r_sepc();
-  
+
   if(r_scause() == 8){
     // system call
-
     if(p->killed)
-      exit(-1);
+      goto out;
 
-    // sepc points to the ecall instruction,
-    // but we want to return to the next instruction.
+    // ecall returns to next instr
     p->trapframe->epc += 4;
 
-    // an interrupt will change sstatus &c registers,
-    // so don't enable until done with those registers.
     intr_on();
-
     syscall();
+
+  } else if(r_scause() == 12 || r_scause() == 15){
+    // 12: instruction page fault (按你的要求一并走这里)
+    // 15: store/AMO page fault（典型 COW）
+
+    uint64 va = r_stval();
+    // ★ 关键修复：越界地址直接干掉进程，避免 walk() panic
+    if(va >= MAXVA){
+      p->killed = 1;
+      goto out;
+    }
+
+    uint64 va0 = PGROUNDDOWN(va);
+    pte_t *pte = walk(p->pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0){
+      p->killed = 1;
+      goto out;
+    }
+
+    if((*pte & PTE_COW) == 0){
+      // 不是 COW 页（例如真正非法访问）——按题意杀掉
+      p->killed = 1;
+      goto out;
+    }
+
+    // COW 拆页
+    uint64 oldpa = PTE2PA(*pte);
+    char *mem = kalloc();
+    if(mem == 0){
+      p->killed = 1;  // OOM，按题意 kill
+      goto out;
+    }
+
+    // 复制旧页到新页（PA 直映，无需 +KERNBASE）
+    memmove(mem, (void*)oldpa, PGSIZE);
+
+    // 替换映射：先 unmap（会对旧页 kfree，从而递减引用计数）
+    uint flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+    uvmunmap(p->pagetable, va0, 1, 1);
+
+    // 重新映射到新页（kalloc() 返回值可直接作为 pa）
+    if(mappages(p->pagetable, va0, PGSIZE, (uint64)mem, flags) != 0){
+      kfree(mem);
+      panic("cowhandler: mappages failed");
+    }
+
+    sfence_vma();
+
   } else if((which_dev = devintr()) != 0){
+    // device interrupt
     // ok
   } else {
+    // unexpected trap
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
 
+out:
   if(p->killed)
     exit(-1);
 
-  // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
     yield();
 
   usertrapret();
 }
+
+
 
 //
 // return to user space

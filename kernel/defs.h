@@ -9,6 +9,12 @@ struct sleeplock;
 struct stat;
 struct superblock;
 
+//cow
+void incref(uint64 pa);
+int  decref(uint64 pa);
+int  getref(uint64 pa);
+
+
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);

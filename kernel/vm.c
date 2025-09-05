@@ -300,32 +300,42 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
+  uint64 i;
   pte_t *pte;
-  uint64 pa, i;
-  uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      return -1;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+      return -1;
+
+    uint64 pa = PTE2PA(*pte);
+    uint flags = PTE_FLAGS(*pte);
+
+    // 在子页表建立到同一物理页的映射，但清写位
+    if(mappages(new, i, PGSIZE, pa, (flags & ~PTE_W)) != 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+
+    // 如果父原本是可写页：父/子都改成 COW
+    if(flags & PTE_W){
+      *pte = (*pte & ~PTE_W) | PTE_COW;
+      pte_t *cpte = walk(new, i, 0);
+      *cpte = (*cpte & ~PTE_W) | PTE_COW;
     }
+
+    // 增加共享页的引用计数
+    incref(pa);
   }
+
+  // 刷 TLB（当前核上）
+  sfence_vma();
   return 0;
 
- err:
+err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
+
 
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
@@ -347,23 +357,50 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (dstva - va0);
-    if(n > len)
-      n = len;
-    memmove((void *)(pa0 + (dstva - va0)), src, n);
+    if(va0 >= MAXVA) return -1;
 
-    len -= n;
-    src += n;
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      return -1;
+
+    // 如果是 COW，先拆
+    if(*pte & PTE_COW){
+      uint flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+      uint64 oldpa = PTE2PA(*pte);
+      char *mem = kalloc();
+      if(mem == 0)
+        return -1;
+      memmove(mem, (void*)oldpa, PGSIZE);
+
+      uvmunmap(pagetable, va0, 1, 1);
+      if(mappages(pagetable, va0, PGSIZE, (uint64)mem, flags) != 0){
+        kfree(mem);
+        panic("copyout: mappages failed");
+      }
+      sfence_vma();
+
+      // 重新拿一次 pte/pa（因为映射已发生变化）
+      pte = walk(pagetable, va0, 0);
+      if(pte == 0 || (*pte & PTE_V) == 0) return -1;
+    }
+
+    pa0 = PTE2PA(*pte);
+    n = PGSIZE - (dstva - va0);
+    if(n > len) n = len;
+
+    memmove((void*)(pa0 + (dstva - va0)), src, n);
+
+    len  -= n;
+    src  += n;
     dstva = va0 + PGSIZE;
   }
   return 0;
 }
+
 
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
