@@ -77,8 +77,20 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  if (which_dev == 2) {  // 定时器中断
+  struct proc *p = myproc();
+  p->alarmticks += 1;
+  if ((p->alarmticks >= p->alarminterval) && (p->alarminterval > 0)) {
+    p->alarmticks = 0;
+    if (p->sigreturned == 1) {
+      p->alarmtrapframe = *(p->trapframe);
+      p->trapframe->epc = (uint64)p->alarmhandler;
+      p->sigreturned = 0;
+      usertrapret();  // 跳转到处理函数
+    }
+  }
+  yield();  // 允许其他进程执行
+  }
 
   usertrapret();
 }
