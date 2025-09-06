@@ -92,30 +92,82 @@ e1000_init(uint32 *xregs)
   regs[E1000_IMS] = (1 << 7); // RXDW -- Receiver Descriptor Write Back
 }
 
-int
-e1000_transmit(struct mbuf *m)
+int e1000_transmit(struct mbuf *m)
 {
-  //
-  // Your code here.
-  //
-  // the mbuf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after sending.
-  //
-  
-  return 0;
+    // 获取锁，确保多线程环境下的同步
+    acquire(&e1000_lock);
+
+    // 读取E1000_TDT控制寄存器，获取下一个可用的发送描述符索引
+    int index = regs[E1000_TDT];
+
+    // 检查当前索引位置的发送描述符是否已完成发送（通过检查E1000_TXD_STAT_DD位）
+    if ((tx_ring[index].status & E1000_TXD_STAT_DD) == 0) {
+        // 如果发送未完成，释放锁并返回错误
+        release(&e1000_lock);
+        return -1;
+    }
+
+    // 如果当前索引位置有上一个发送的mbuf，释放它
+    if (tx_mbufs[index])
+        mbuffree(tx_mbufs[index]);
+
+    // 将当前要发送的mbuf保存到发送缓冲区数组中
+    tx_mbufs[index] = m;
+    // 设置发送描述符的长度字段为当前mbuf的长度
+    tx_ring[index].length = m->len;
+    // 设置发送描述符的地址字段为当前mbuf数据的首地址
+    tx_ring[index].addr = (uint64)m->head;
+
+    // 设置发送描述符的命令字段，包括报告状态（E1000_TXD_CMD_RS）和数据包结束（E1000_TXD_CMD_EOP）
+    tx_ring[index].cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+
+    // 更新E1000_TDT控制寄存器，指向下一个可用的发送描述符索引（环状结构，取模运算）
+    regs[E1000_TDT] = (index + 1) % TX_RING_SIZE;
+
+    // 释放锁
+    release(&e1000_lock);
+
+    // 返回成功
+    return 0;
 }
 
-static void
-e1000_recv(void)
+static void e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver an mbuf for each packet (using net_rx()).
-  //
+    // 无限循环遍历接收描述符环，处理所有已接收的数据包
+    while (1) {
+
+        // 获取下一个接收描述符的索引，环状结构，取模运算
+        int index = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+
+        // 检查当前描述符的状态位，判断是否有新的数据包
+        if ((rx_ring[index].status & E1000_RXD_STAT_DD) == 0) {
+            // 如果没有新的数据包，退出循环
+            return;
+        }
+
+        // 设置当前缓冲区的长度为接收描述符中记录的长度
+        rx_mbufs[index]->len = rx_ring[index].length;
+
+        // 将接收到的数据包传递给网络层处理
+        net_rx(rx_mbufs[index]);
+
+        // 分配新的mbuf缓冲区，以便接收新的数据包
+        rx_mbufs[index] = mbufalloc(0);
+        // 检查分配是否成功
+        if (!rx_mbufs[index])
+            panic("e1000_recv: mbufalloc failed");
+
+        // 清除当前描述符的状态位
+        rx_ring[index].status = 0;
+
+        // 更新描述符的地址为新分配的缓冲区地址
+        rx_ring[index].addr = (uint64)rx_mbufs[index]->head;
+
+        // 更新接收描述符尾指针，通知硬件描述符已处理
+        regs[E1000_RDT] = index;
+    }
 }
+
 
 void
 e1000_intr(void)
