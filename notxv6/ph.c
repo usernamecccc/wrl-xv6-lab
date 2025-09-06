@@ -13,22 +13,21 @@ struct entry {
   int value;
   struct entry *next;
 };
+
 struct entry *table[NBUCKET];
 int keys[NKEYS];
 int nthread = 1;
 
+// 声明锁数组
+pthread_mutex_t locks[NBUCKET];  // 每个桶一个锁
 
-double
-now()
-{
- struct timeval tv;
- gettimeofday(&tv, 0);
- return tv.tv_sec + tv.tv_usec / 1000000.0;
+double now() {
+  struct timeval tv;
+  gettimeofday(&tv, 0);
+  return tv.tv_sec + tv.tv_usec / 1000000.0;
 }
 
-static void 
-insert(int key, int value, struct entry **p, struct entry *n)
-{
+static void insert(int key, int value, struct entry **p, struct entry *n) {
   struct entry *e = malloc(sizeof(struct entry));
   e->key = key;
   e->value = value;
@@ -36,9 +35,7 @@ insert(int key, int value, struct entry **p, struct entry *n)
   *p = e;
 }
 
-static 
-void put(int key, int value)
-{
+static void put(int key, int value) {
   int i = key % NBUCKET;
 
   // is the key already present?
@@ -47,47 +44,40 @@ void put(int key, int value)
     if (e->key == key)
       break;
   }
-  if(e){
-    // update the existing key.
+
+  if (e) {
+    // update the existing key
     e->value = value;
   } else {
-    // the new is new.
+    // the new is new
+    pthread_mutex_lock(&locks[i]);  // 对第i个桶加锁
     insert(key, value, &table[i], table[i]);
+    pthread_mutex_unlock(&locks[i]);  // 解锁
   }
-
 }
 
-static struct entry*
-get(int key)
-{
+static struct entry* get(int key) {
   int i = key % NBUCKET;
-
-
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
     if (e->key == key) break;
   }
-
   return e;
 }
 
-static void *
-put_thread(void *xa)
-{
-  int n = (int) (long) xa; // thread number
-  int b = NKEYS/nthread;
+static void *put_thread(void *xa) {
+  int n = (int) (long) xa;  // thread number
+  int b = NKEYS / nthread;
 
   for (int i = 0; i < b; i++) {
-    put(keys[b*n + i], n);
+    put(keys[b * n + i], n);
   }
 
   return NULL;
 }
 
-static void *
-get_thread(void *xa)
-{
-  int n = (int) (long) xa; // thread number
+static void *get_thread(void *xa) {
+  int n = (int) (long) xa;  // thread number
   int missing = 0;
 
   for (int i = 0; i < NKEYS; i++) {
@@ -98,34 +88,39 @@ get_thread(void *xa)
   return NULL;
 }
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   pthread_t *tha;
   void *value;
   double t1, t0;
-
 
   if (argc < 2) {
     fprintf(stderr, "Usage: %s nthreads\n", argv[0]);
     exit(-1);
   }
+
   nthread = atoi(argv[1]);
   tha = malloc(sizeof(pthread_t) * nthread);
   srandom(0);
   assert(NKEYS % nthread == 0);
+
+  // 初始化所有锁
+  for (int i = 0; i < NBUCKET; i++) {
+    pthread_mutex_init(&locks[i], NULL);
+  }
+
+  // 填充键数组
   for (int i = 0; i < NKEYS; i++) {
     keys[i] = random();
   }
 
   //
-  // first the puts
+  // First the puts
   //
   t0 = now();
-  for(int i = 0; i < nthread; i++) {
+  for (int i = 0; i < nthread; i++) {
     assert(pthread_create(&tha[i], NULL, put_thread, (void *) (long) i) == 0);
   }
-  for(int i = 0; i < nthread; i++) {
+  for (int i = 0; i < nthread; i++) {
     assert(pthread_join(tha[i], &value) == 0);
   }
   t1 = now();
@@ -134,17 +129,25 @@ main(int argc, char *argv[])
          NKEYS, t1 - t0, NKEYS / (t1 - t0));
 
   //
-  // now the gets
+  // Now the gets
   //
   t0 = now();
-  for(int i = 0; i < nthread; i++) {
+  for (int i = 0; i < nthread; i++) {
     assert(pthread_create(&tha[i], NULL, get_thread, (void *) (long) i) == 0);
   }
-  for(int i = 0; i < nthread; i++) {
+  for (int i = 0; i < nthread; i++) {
     assert(pthread_join(tha[i], &value) == 0);
   }
   t1 = now();
 
   printf("%d gets, %.3f seconds, %.0f gets/second\n",
-         NKEYS*nthread, t1 - t0, (NKEYS*nthread) / (t1 - t0));
+         NKEYS * nthread, t1 - t0, (NKEYS * nthread) / (t1 - t0));
+
+  // 销毁所有锁
+  for (int i = 0; i < NBUCKET; i++) {
+    pthread_mutex_destroy(&locks[i]);
+  }
+
+  return 0;
 }
+

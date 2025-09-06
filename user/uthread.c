@@ -10,11 +10,21 @@
 #define STACK_SIZE  8192
 #define MAX_THREAD  4
 
+// 线程的上下文
+struct thread_context {
+  uint64 ra;  // 返回地址寄存器
+  uint64 sp;  // 栈指针寄存器
+
+  uint64 s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11;  // 保存s寄存器
+};
 
 struct thread {
-  char       stack[STACK_SIZE]; /* the thread's stack */
-  int        state;             /* FREE, RUNNING, RUNNABLE */
+  char stack[STACK_SIZE];  // 线程的栈
+  int state;               // 线程状态：FREE, RUNNING, RUNNABLE
+
+  struct thread_context context;  // 线程的上下文
 };
+
 struct thread all_thread[MAX_THREAD];
 struct thread *current_thread;
 extern void thread_switch(uint64, uint64);
@@ -31,52 +41,52 @@ thread_init(void)
   current_thread->state = RUNNING;
 }
 
-void 
-thread_schedule(void)
-{
+void thread_schedule(void) {
   struct thread *t, *next_thread;
 
-  /* Find another runnable thread. */
+  // 查找下一个可运行的线程
   next_thread = 0;
   t = current_thread + 1;
-  for(int i = 0; i < MAX_THREAD; i++){
-    if(t >= all_thread + MAX_THREAD)
-      t = all_thread;
-    if(t->state == RUNNABLE) {
-      next_thread = t;
-      break;
-    }
-    t = t + 1;
+  for (int i = 0; i < MAX_THREAD; i++) {
+      if (t >= all_thread + MAX_THREAD)
+          t = all_thread;
+      if (t->state == RUNNABLE) {
+          next_thread = t;  // 找到可运行线程
+          break;
+      }
+      t = t + 1;
   }
 
   if (next_thread == 0) {
-    printf("thread_schedule: no runnable threads\n");
-    exit(-1);
+      printf("thread_schedule: no runnable threads\n");
+      exit(-1);
   }
 
-  if (current_thread != next_thread) {         /* switch threads?  */
-    next_thread->state = RUNNING;
-    t = current_thread;
-    current_thread = next_thread;
-    /* YOUR CODE HERE
-     * Invoke thread_switch to switch from t to next_thread:
-     * thread_switch(??, ??);
-     */
-  } else
-    next_thread = 0;
+  if (current_thread != next_thread) {  // 如果当前线程和下一个线程不同，进行切换
+      next_thread->state = RUNNING;  // 设置下一个线程为运行状态
+      t = current_thread;
+      current_thread = next_thread;
+      // 调用 thread_switch 实现上下文切换
+      thread_switch((uint64)&t->context, (uint64)&current_thread->context);
+  } else {
+      next_thread = 0;  // 没有线程需要切换
+  }
 }
 
-void 
-thread_create(void (*func)())
-{
+
+void thread_create(void (*func)()) {
   struct thread *t;
 
   for (t = all_thread; t < all_thread + MAX_THREAD; t++) {
-    if (t->state == FREE) break;
+      if (t->state == FREE) break;  // 找到一个空闲的线程
   }
-  t->state = RUNNABLE;
-  // YOUR CODE HERE
+  t->state = RUNNABLE;  // 将线程状态设置为可运行
+
+  // 初始化线程上下文
+  t->context.ra = (uint64)func;  // 设置返回地址，指向传入的函数（线程的执行函数）
+  t->context.sp = (uint64)(t->stack + STACK_SIZE);  // 设置栈指针，指向栈的顶部
 }
+
 
 void 
 thread_yield(void)
