@@ -80,6 +80,22 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+struct file;
+
+#define VMASIZE 16
+struct VMA {
+  int active;
+  uint64 addr;
+  int length;
+  int prot;
+  int flags;
+  int fd;
+  int offset;
+  struct file* fp;
+};
+
+
+
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
@@ -105,4 +121,10 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct VMA vma[VMASIZE];     // mmap regions
+
 };
+
+// prototypes used by trap.c
+int killed(struct proc*);
+void setkilled(struct proc*);

@@ -3,8 +3,15 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"   // 先提供 struct sleeplock
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"          // 先提供 NDIRECT 等
+#include "file.h"        // 最后再包含 file.h，里面用到了上面两个
+#include "fcntl.h"
+
+
+
 
 struct spinlock tickslock;
 uint ticks;
@@ -29,7 +36,6 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
-//
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
@@ -53,27 +59,106 @@ usertrap(void)
   if(r_scause() == 8){
     // system call
 
-    if(p->killed)
+    if(killed(p))
       exit(-1);
 
     // sepc points to the ecall instruction,
     // but we want to return to the next instruction.
     p->trapframe->epc += 4;
 
-    // an interrupt will change sstatus &c registers,
-    // so don't enable until done with those registers.
+    // an interrupt will change sepc, scause, and sstatus,
+    // so enable only now that we're done with those registers.
     intr_on();
 
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if (r_scause() == 13 || r_scause() == 15) {
+        // supervisor interrupt exception code
+        uint64 scause = r_scause();
+        // the faulting virtual address
+        uint64 addr = r_stval();
+        if (addr >= MAXVA) {
+          setkilled(p);
+          goto out;
+        }
+
+        struct VMA* vma = 0;
+        for (int i = 0; i < VMASIZE; ++i) {
+          if (p->vma[i].active == 0) continue;
+
+          uint64 begin = (uint64)p->vma[i].addr;
+          uint64 end = begin + p->vma[i].length;
+          if (addr >= begin && addr < end) {
+            vma = &p->vma[i];
+            break;
+          }
+        }
+
+        if (vma == 0) {
+          printf("usertrap: the faulting virtual address %p is not in the VMA\n", addr);
+          setkilled(p);
+          goto out;
+        }
+
+        if (scause == 13 && vma->fp->readable == 0) {
+          printf("usertrap: the file is unreadable\n");
+          setkilled(p);
+          goto out;
+        }
+
+        if (scause == 15 && vma->fp->writable == 0) {
+          printf("usertrap: the file is unwritable\n");
+          setkilled(p);
+          goto out;
+        }
+
+        void* pa = kalloc();
+        if (pa == 0) {
+          printf("usertrap: unable to allocate memory\n");
+          setkilled(p);
+          goto out;
+        }
+        memset(pa, 0, PGSIZE);
+
+        addr = PGROUNDDOWN(addr);
+        int perm = 0;
+        // mappages will set PTE_V
+        perm |= PTE_U;
+        if (vma->prot & PROT_READ)
+          perm |= PTE_R;
+        if (vma->prot & PROT_WRITE)
+          perm |= PTE_W;
+        if (vma->prot & PROT_EXEC)
+          perm |= PTE_X;
+        if (mappages(p->pagetable, addr, PGSIZE, (uint64)pa, perm) != 0) {
+          kfree(pa);
+          setkilled(p);
+          goto out;
+        }
+        ilock(vma->fp->ip);
+        if (readi(vma->fp->ip, 1, addr, addr - (uint64)vma->addr + vma->offset, PGSIZE) == 0) {
+          iunlock(vma->fp->ip);
+          uvmunmap(p->pagetable, addr, 1, 1);
+          setkilled(p);
+          goto out;
+        }
+        iunlock(vma->fp->ip);
+}else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    setkilled(p);
   }
 
-  if(p->killed)
+  if(killed(p))
+    exit(-1);
+
+  // give up the CPU if this is a timer interrupt.
+  if(which_dev == 2)
+    yield();
+    
+  out:
+  if(killed(p))
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
@@ -82,6 +167,7 @@ usertrap(void)
 
   usertrapret();
 }
+
 
 //
 // return to user space

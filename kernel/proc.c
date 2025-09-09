@@ -5,6 +5,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+
 
 struct cpu cpus[NCPU];
 
@@ -301,6 +303,15 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // fork时要复制文件内存映射信息
+for (int i = 0; i < VMASIZE; i++) {
+  if (p->vma[i].active) {
+    memmove(&(np->vma[i]), &(p->vma[i]), sizeof(p->vma[i]));
+    filedup(p->vma[i].fp); // refcount++
+  }
+}
+
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -332,6 +343,28 @@ reparent(struct proc *p)
     }
   }
 }
+// Return whether a process has been killed.
+// Safe to call without holding p->lock.
+int
+killed(struct proc *p)
+{
+  int k;
+  acquire(&p->lock);
+  k = p->killed;
+  release(&p->lock);
+  return k;
+}
+
+// Mark a process as killed.
+// Safe to call without holding p->lock.
+void
+setkilled(struct proc *p)
+{
+  acquire(&p->lock);
+  p->killed = 1;
+  release(&p->lock);
+}
+
 
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state
@@ -352,6 +385,20 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
+  // exit时清空进程的文件内存映射信息
+for (int i = 0; i < VMASIZE; i++) {
+  if (p->vma[i].active) {
+    if (p->vma[i].flags & MAP_SHARED)
+      // 写回磁盘文件
+      filewrite(p->vma[i].fp, p->vma[i].addr, p->vma[i].length);
+    fileclose(p->vma[i].fp);
+    // 取消虚拟内存映射
+    uvmunmap(p->pagetable, p->vma[i].addr, p->vma[i].length / PGSIZE, 1);
+    // 复位
+    p->vma[i].active = 0;
+  }
+}
+
 
   begin_op();
   iput(p->cwd);

@@ -52,6 +52,103 @@ fdalloc(struct file *f)
   return -1;
 }
 
+uint64 sys_mmap(void)
+{
+  int length, prot, flags, fd, offset;
+  uint64 addr;
+  struct file* fp;
+  struct proc* p = myproc();
+  // 处理传入参数
+  argaddr(0, &addr); // 获取 addr 参数
+  argint(1, &length); // 获取 length 参数
+  argint(2, &prot); // 获取 prot 参数
+  argint(3, &flags); // 获取 flags 参数
+  argfd(4, &fd, &fp); // 获取文件描述符 fd 和文件指针 fp
+  argint(5, &offset); // 获取 offset 参数
+  // 参数检查
+  if (!(fp->writable) && (prot & PROT_WRITE) && (flags == MAP_SHARED)) {
+    // 如果文件不可写，并且内存保护需要写权限且标志为共享映射，则返回错误
+    return -1;
+  }
+  // 将 length 向上取整到页面大小
+  length = PGROUNDUP(length);
+  if (p->sz + length > MAXVA) {
+    // 如果映射后进程地址空间超出最大虚拟地址，则返回错误
+    return -1;
+  }
+  // 遍历进程的虚拟内存区域（VMA）数组，找到一个未使用的区域
+  for (int i = 0; i < VMASIZE; i++) {
+    if (p->vma[i].active == 0) {
+      // 标记该区域为已使用
+      p->vma[i].active = 1;
+      // 直接映射到进程当前大小（sz）对应的虚拟地址
+      p->vma[i].addr = p->sz;
+      p->vma[i].length = length;
+      p->vma[i].prot = prot;
+      p->vma[i].flags = flags;
+      p->vma[i].fd = fd;
+      p->vma[i].fp = fp;
+      p->vma[i].offset = offset;
+      // 增加文件引用计数，以防止文件被关闭
+      filedup(fp);
+      // 更新进程的大小
+      p->sz += length;
+      // 返回映射的虚拟地址 
+      return p->vma[i].addr;
+    }
+  }
+  // 如果没有找到可用的 VMA 区域，返回错误
+  return -1;
+}
+uint64 sys_munmap(void)
+{
+    int length;
+    uint64 addr;
+    
+    // 获取参数
+    argaddr(0, &addr); // 获取虚拟地址
+    argint(1, &length); // 获取解除映射的长度
+
+    struct proc *p = myproc();
+    struct VMA *vma = 0;
+    
+    // 查找对应的 VMA
+    for (int i = 0; i < VMASIZE; i++) {
+        if (p->vma[i].active) {
+            if (addr == p->vma[i].addr) {
+                // 因为 addr 和 length 是页对齐的，所以只要 addr 相等，就一定是同一个 VMA
+                vma = &p->vma[i];
+                break;
+            }
+        }
+    }
+
+    // 如果没有找到对应的 VMA，返回 0
+    if (vma == 0) {
+        return 0;
+    } else {
+        // 更新 VMA 的地址和长度
+        vma->addr += length;
+        vma->length -= length;
+
+        // 如果是共享映射，需要将内容写回文件
+        if (vma->flags & MAP_SHARED)
+            filewrite(vma->fp, addr, length);
+
+        // 解除映射
+        uvmunmap(p->pagetable, addr, length / PGSIZE, 1);
+
+        // 如果 VMA 的长度为 0，说明已经全部解除映射，需要释放资源
+        if (vma->length == 0) {
+            fileclose(vma->fp); // 关闭文件
+            vma->active = 0; // 标记 VMA 为未使用
+        }
+
+        return 0;
+    }
+}
+
+
 uint64
 sys_dup(void)
 {
