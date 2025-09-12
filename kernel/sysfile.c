@@ -538,26 +538,35 @@ sys_pipe(void)
   return 0;
 }
 
-// syscall for int symlink(char *target, char *path);
+// 系统调用：symlink(char *target, char *path)
+// 作用：在 path 创建一个符号链接文件，其内容为目标路径 target。
+// 返回值：成功返回 0，失败返回 -1。
 uint64
 sys_symlink(void){
-  char path[MAXPATH];
-  char target[MAXPATH];
-  struct inode *ip;
+  char path[MAXPATH]; // 存储用户传入的目标文件路径
+  char target[MAXPATH];// 存储用户传入的符号链接路径
+  struct inode *ip; // inode 指针
 
-  begin_op();
+  begin_op();// 开始一次文件系统操作（带日志事务）
+  // argstr(0, target, MAXPATH) < 0  —— 从用户态获取第一个字符串参数（目标路径）失败
+  // argstr(1, path, MAXPATH) < 0    —— 从用户态获取第二个字符串参数（符号链接路径）失败
+  // (ip = create(path, T_SYMLINK, 0, 0)) == 0 —— 尝试创建一个类型为 T_SYMLINK 的 inode 失败
+  // 只要以上三者之一成立，就说明 symlink 系统调用无法继续执行，直接释放资源并返回 -1。
   if (argstr(0, target, MAXPATH) < 0||argstr(1, path, MAXPATH) < 0 || (ip = create(path, T_SYMLINK, 0, 0)) == 0)
   {
     end_op();
     return -1;
   }
+  // 尝试把 target 数组的内容写入到符号链接文件的 inode 数据区。
+  // 如果写入的字节数 != sizeof(target)，说明写入失败（没有完整写入），此时需要清理并返回 -1。
   if (writei(ip, 0, (uint64)&target, 0, sizeof(target)) != sizeof(target))
   {
-    iunlockput(ip);
+    iunlockput(ip);// 解锁并释放该 inode
     end_op();
     return -1;
   }
+  // 正常情况：写入成功，释放 inode 并结束操作
   iunlockput(ip);
-  end_op();
+  end_op();// 结束文件系统操作
   return 0;
 }

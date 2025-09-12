@@ -19,6 +19,7 @@ fetchaddr(uint64 addr, uint64 *ip)
   return 0;
 }
 
+
 // Fetch the nul-terminated string at addr from the current process.
 // Returns length of string, not including nul, or -1 for error.
 int
