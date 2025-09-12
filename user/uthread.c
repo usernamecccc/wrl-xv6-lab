@@ -22,7 +22,7 @@ struct thread {
   char stack[STACK_SIZE];  // 线程的栈
   int state;               // 线程状态：FREE, RUNNING, RUNNABLE
 
-  struct thread_context context;  // 线程的上下文
+  struct thread_context context;  // 线程的上下文，切换时保存/恢复用
 };
 
 struct thread all_thread[MAX_THREAD];
@@ -47,16 +47,16 @@ void thread_schedule(void) {
   // 查找下一个可运行的线程
   next_thread = 0;
   t = current_thread + 1;
-  for (int i = 0; i < MAX_THREAD; i++) {
+  for (int i = 0; i < MAX_THREAD; i++) {//找下一个 RUNNABLE
       if (t >= all_thread + MAX_THREAD)
-          t = all_thread;
-      if (t->state == RUNNABLE) {
+          t = all_thread; // 环回
+      if (t->state == RUNNABLE) {// 命中一个可运行线程
           next_thread = t;  // 找到可运行线程
           break;
       }
       t = t + 1;
   }
-
+// 没有可运行线程，直接退出
   if (next_thread == 0) {
       printf("thread_schedule: no runnable threads\n");
       exit(-1);
@@ -67,6 +67,9 @@ void thread_schedule(void) {
       t = current_thread;
       current_thread = next_thread;
       // 调用 thread_switch 实现上下文切换
+      // 真正的上下文切换：把 t->context 保存，把 current_thread->context 恢复
+    //    恢复后，CPU 的 ra/sp/s0..s11 变成 next 的，上下文回到它上次停的位置；
+    //    对“首次运行”的线程，ra = func，因此会从 func 开始执行。
       thread_switch((uint64)&t->context, (uint64)&current_thread->context);
   } else {
       next_thread = 0;  // 没有线程需要切换
