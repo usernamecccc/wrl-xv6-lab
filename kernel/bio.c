@@ -42,41 +42,41 @@ static uint hash_v(uint key) {
 }
 
 static void initbucket(struct bucket* b) {
-  initlock(&b->lock, "bcache.bucket");
+  initlock(&b->lock, "bcache.bucket");// 初始化桶锁
   b->head.prev = &b->head;
   b->head.next = &b->head;
 }
 
 void binit(void) {
   for (int i = 0; i < NBUF; ++i) {
-    initsleeplock(&bcache.buf[i].lock, "buffer");
+    initsleeplock(&bcache.buf[i].lock, "buffer"); // 每个 buf 数据锁
   }
   for (int i = 0; i < NBUCKET; ++i) {
-    initbucket(&bcache.bucket[i]);
+    initbucket(&bcache.bucket[i]);// 每个桶初始化
   }
 }
 
-// Look through buffer cache for block on device dev.
-// If not found, allocate a buffer.
-// In either case, return locked buffer.
+// 获取指定 (dev, blockno) 的缓存块，如果不存在则分配一个新的
 static struct buf*
 bget(uint dev, uint blockno)
 {
-  uint v = hash_v(blockno);
+  uint v = hash_v(blockno); // 计算桶号
   struct bucket* bucket = &bcache.bucket[v];
-  acquire(&bucket->lock);
+  acquire(&bucket->lock);// 加桶锁，保护链表与元数据
+// 1. 在桶链表中查找目标块
   for (struct buf *buf = bucket->head.next; buf != &bucket->head;buf = buf->next) {
     if (buf->dev == dev && buf->blockno == blockno) {
-      buf->refcnt++;
-      release(&bucket->lock);
-      acquiresleep(&buf->lock);
+      buf->refcnt++;// 命中：增加计数
+      release(&bucket->lock);// 立刻放桶锁
+      acquiresleep(&buf->lock);// 现在才拿“数据锁”，允许睡眠
       return buf;
     }
   }
 
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
+  // 未命中
+  // 从全局池找一个空闲 buf
   for (int i = 0; i < NBUF; ++i) {
+    //无锁抢占一个空闲 buf 槽位
     if (!bcache.buf[i].used &&!__atomic_test_and_set(&bcache.buf[i].used, __ATOMIC_ACQUIRE)) {
       struct buf *buf = &bcache.buf[i];
       buf->dev = dev;
@@ -100,8 +100,8 @@ struct buf*
 bread(uint dev, uint blockno)
 {
   struct buf *b;
-
-  b = bget(dev, blockno);
+//(dev, blockno)磁盘设备号和逻辑块号
+  b = bget(dev, blockno);// (dev, blockno) 就是缓冲区缓存的键（唯一标识）
   if(!b->valid) {
     virtio_disk_rw(b, 0);
     b->valid = 1;
