@@ -77,7 +77,7 @@ exec(char *path, char **argv)
 
   // Allocate some pages at the next page boundary.
   // Make the first inaccessible as a stack guard.
-  // Use the rest as the user stack.
+
   sz = PGROUNDUP(sz);
   uint64 sz1;
   if((sz1 = uvmalloc(pagetable, sz, sz + (USERSTACK+1)*PGSIZE, PTE_W)) == 0)

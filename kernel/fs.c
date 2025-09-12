@@ -376,48 +376,54 @@ iunlockput(struct inode *ip)
 // are listed in ip->addrs[].  The next NINDIRECT blocks are
 // listed in block ip->addrs[NDIRECT].
 
-// Return the disk block address of the nth block in inode ip.
-// If there is no such block, bmap allocates one.
-// returns 0 if out of disk space.
+// 将文件的逻辑块号 bn 映射为磁盘上的物理块号；必要时分配新块。
+// - 读取时：若块不存在通常视为错误（这里依旧按分配式处理，因为 bmap 被读/写共用）
+// - 写入时：若需要，会分配数据块、以及必要的（单/双）间接表块。
+// 返回：数据块的物理块号；若分配失败则返回 0。
 static uint
 bmap(struct inode *ip, uint bn)
 {
   uint addr, *a;
   struct buf *bp,*bp1;
+  // 1. 直接块（direct）：逻辑块号落在 [0, NDIRECT)
 
-  if(bn < NDIRECT){
+  if(bn < NDIRECT){// 若该 direct 槽位还没有分配物理块，则分配一个数据块并记录到 inode
     if((addr = ip->addrs[bn]) == 0){
-      addr = balloc(ip->dev);
+      addr = balloc(ip->dev); // 从位图中找一个空闲块
       if(addr == 0)
-        return 0;
-      ip->addrs[bn] = addr;
+        return 0;// 分配失败：磁盘可能已满
+      ip->addrs[bn] = addr;// 将新块号写入 inode 的直接块数组
     }
-    return addr;
+    return addr;// 返回该数据块的物理块号
   }
+  // 跳过 direct 区间，转入间接空间
   bn -= NDIRECT;
-
+// 2. 单重间接（singly-indirect）：逻辑块号落在 [NDIRECT, NDIRECT+NINDIRECT)
   if(bn < NINDIRECT){
     // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0){
-      addr = balloc(ip->dev);
+    if((addr = ip->addrs[NDIRECT]) == 0){// 若 inode 中的单重间接块尚未分配，则分配之
+      addr = balloc(ip->dev); // 分配“单重间接表块”（其内容是地址数组）
       if(addr == 0)
         return 0;
-      ip->addrs[NDIRECT] = addr;
+      ip->addrs[NDIRECT] = addr;  // 把该表块的物理块号存入 inode
     }
+     // 读取“单重间接表块”
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
+     // 若该单重间接表的第 bn 项还没有指向数据块，则分配一个数据块并写回表
     if((addr = a[bn]) == 0){
-      addr = balloc(ip->dev);
+      addr = balloc(ip->dev);// 为数据分配新块
       if(addr){
-        a[bn] = addr;
-        log_write(bp);
+        a[bn] = addr;// 在单重间接表中写入数据块号
+        log_write(bp);// 标记该缓冲区已修改
       }
     }
-    brelse(bp);
+    brelse(bp);// 释放单重间接表块的缓冲
     return addr;
   }
+    // 跳过单重间接区间，进入双重间接
   bn -=NINDIRECT;
-
+ // 3. 二重间接（doubly-indirect）：逻辑块号落在后续区间
   if(bn<NDINDIRECT){
     // Load double indirect block, allocating if necessary.
     if ((addr = ip->addrs[NDIRECT+1]) == 0)
@@ -425,29 +431,33 @@ bmap(struct inode *ip, uint bn)
       addr = balloc(ip->dev);
       if (addr == 0)
         return 0;
-      ip->addrs[NDIRECT+1] = addr;
+      ip->addrs[NDIRECT+1] = addr; // 记录二重间接表块的物理块号
     }
+    // 读取“二重间接表块”：里面存放 NINDIRECT 个“单重间接表块”的物理块号
     bp = bread(ip->dev, addr);
     a = (uint *)bp->data;
-    uint bn1 = bn / NINDIRECT;
-    uint bn2 = bn % NINDIRECT;
+    // 计算：bn 对应到哪个“单重间接表块”（bn1），以及该表块中的哪一项（bn2）
+    uint bn1 = bn / NINDIRECT;// 选择某个单重间接表块
+    uint bn2 = bn % NINDIRECT;// 在该表块中的索引位置
+ // 确保第 bn1 个“单重间接表块”已存在，否则先分配该表块
     if ((addr = a[bn1]) == 0)
     {
-      addr = balloc(ip->dev);
+      addr = balloc(ip->dev);// 为“单重间接表块”分配物理块
       if (addr == 0){
         brelse(bp);
         return 0;
       }
-      a[bn1]=addr;
-      log_write(bp);
+      a[bn1]=addr;// 将新分配的“单重间接表块”地址写入二重表
+      log_write(bp); // 持久化对二重间接表块的修改
     }
-    //can we release bp here?
+
     brelse(bp);
     bp1 = bread(ip->dev, addr);
     a = (uint *)bp1->data;
+    // 确保该单重间接表的第 bn2 项指向的数据块已存在；若无则分配并写回
     if ((addr = a[bn2]) == 0)
     {
-      addr = balloc(ip->dev);
+      addr = balloc(ip->dev); // 分配真正的数据块
       if (addr)
       {
         a[bn2] = addr;
@@ -462,55 +472,56 @@ bmap(struct inode *ip, uint bn)
   panic("bmap: out of range");
 }
 
-// Truncate inode (discard contents).
-// Caller must hold ip->lock.
+
+// 释放 ip 对应文件占用的所有磁盘块
 void
 itrunc(struct inode *ip)
 {
   int i, j;
   struct buf *bp,*bp1;
   uint *a,*a1;
-
+// 1. 释放 11 个直接块（如果存在）
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
-      bfree(ip->dev, ip->addrs[i]);
-      ip->addrs[i] = 0;
+      bfree(ip->dev, ip->addrs[i]);// 归还该数据块到空闲位图
+      ip->addrs[i] = 0;// 清空 inode 中的块号
     }
   }
-
+// 2. 释放单重间接块及其所指向的所有数据块
   if(ip->addrs[NDIRECT]){
-    bp = bread(ip->dev, ip->addrs[NDIRECT]);
+    bp = bread(ip->dev, ip->addrs[NDIRECT]);// 读入单重间接表块
     a = (uint*)bp->data;
     for(j = 0; j < NINDIRECT; j++){
       if(a[j])
-        bfree(ip->dev, a[j]);
+        bfree(ip->dev, a[j]);// 释放单重间接表中的每个数据块
     }
-    brelse(bp);
-    bfree(ip->dev, ip->addrs[NDIRECT]);
-    ip->addrs[NDIRECT] = 0;
+    brelse(bp);// 释放单重间接表缓冲
+    bfree(ip->dev, ip->addrs[NDIRECT]);// 释放单重间接“表块”本体
+    ip->addrs[NDIRECT] = 0; // 清空 inode 中的单间接地址
   }
+  // 3. 释放二重间接块以及其下的所有单重间接表块和数据块
   if(ip->addrs[NDIRECT+1]){
-    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]); // 读入二重间接表块
     a = (uint *)bp->data;
     for (j = 0; j < NINDIRECT; j++)
     {
       if (a[j]){
-        bp1 = bread(ip->dev,a[j]);
+        bp1 = bread(ip->dev,a[j]); // 读入该“单重间接表块”
         a1 = (uint *)bp1->data;
         for(int k = 0; k < NINDIRECT; k++){
           if(a1[k]){
-            bfree(ip->dev,a1[k]);
+            bfree(ip->dev,a1[k]); // 释放该数据块
           }
         }
-        brelse(bp1);
-        bfree(ip->dev, a[j]);
+        brelse(bp1);// 释放该“单重间接表块”的缓冲
+        bfree(ip->dev, a[j]);// 释放“单重间接表块”本体
       }
     }
-    brelse(bp);
-    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    brelse(bp);// 释放二重间接表块缓冲
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);// 释放二重间接“表块”本体
     ip->addrs[NDIRECT+1] = 0;
   }
-
+// 清零文件大小并写回 inode 元数据
   ip->size = 0;
   iupdate(ip);
 }
