@@ -20,7 +20,7 @@ backtrace(void)
 {
   printf("backtrace:\n");
   for (uint64 *fp = (uint64 *)r_fp();
-       (uint64)fp < PGROUNDUP((uint64)fp);
+       (uint64)fp < PGROUNDUP((uint64)fp);//判断当前帧指针 fp 是否 还在本页范围内。
        fp = (uint64 *)(*(fp - 2))) {
     // ra 在 fp[-1]，上一层 fp 在 fp[-2]
     printf("%p\n", *(fp - 1));
