@@ -9,8 +9,8 @@ static int round = 0;
 
 struct barrier {
   pthread_mutex_t barrier_mutex;
-  pthread_cond_t barrier_cond;
-  int nthread;      // Number of threads that have reached this round of the barrier
+  pthread_cond_t barrier_cond; // 条件变量：非最后一个到达者在此等待
+  int nthread;      // 当前轮已有多少线程到达屏障（每轮都会清零）
   int round;     // Barrier round
 } bstate;
 
