@@ -39,23 +39,23 @@ void
 usertrap(void)
 {
   int which_dev = 0;
-
+// 如果是从内核态进入，说明出了严重错误
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
-
+// 将 stvec 改成内核的 trap 处理入口
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
 
-  // save user pc
+   // 保存用户程序的 sepc（触发异常的 PC）
   p->trapframe->epc = r_sepc();
 
   if(r_scause() == 8){
-    // system call
+    // 系统调用
     if(p->killed)
       goto out;
 
-    // ecall returns to next instr
+    // ecall 下一条指令作为返回点
     p->trapframe->epc += 4;
 
     intr_on();
@@ -66,7 +66,6 @@ usertrap(void)
     // 15: store/AMO page fault（典型 COW）
 
     uint64 va = r_stval();
-    // ★ 关键修复：越界地址直接干掉进程，避免 walk() panic
     if(va >= MAXVA){
       p->killed = 1;
       goto out;
@@ -137,19 +136,15 @@ void
 usertrapret(void)
 {
   struct proc *p = myproc();
-
-  // we're about to switch the destination of traps from
-  // kerneltrap() to usertrap(), so turn off interrupts until
-  // we're back in user space, where usertrap() is correct.
+// 准备切换 trap 向量到 usertrap()，所以先关中断
   intr_off();
 
-  // send syscalls, interrupts, and exceptions to trampoline.S
+   // 设置用户态 trap 入口（trampoline.S）
   w_stvec(TRAMPOLINE + (uservec - trampoline));
 
-  // set up trapframe values that uservec will need when
-  // the process next re-enters the kernel.
-  p->trapframe->kernel_satp = r_satp();         // kernel page table
-  p->trapframe->kernel_sp = p->kstack + PGSIZE; // process's kernel stack
+  // trapframe 保存内核必要信息，供用户态异常时恢复
+  p->trapframe->kernel_satp = r_satp();          // 内核页表
+  p->trapframe->kernel_sp = p->kstack + PGSIZE; // 内核栈顶
   p->trapframe->kernel_trap = (uint64)usertrap;
   p->trapframe->kernel_hartid = r_tp();         // hartid for cpuid()
 
@@ -157,6 +152,7 @@ usertrapret(void)
   // to get to user space.
   
   // set S Previous Privilege mode to User.
+  // 设置 sstatus：返回用户态并开中断
   unsigned long x = r_sstatus();
   x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
   x |= SSTATUS_SPIE; // enable interrupts in user mode

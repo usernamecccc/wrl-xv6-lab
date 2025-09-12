@@ -22,7 +22,7 @@ struct {
 
 // ---- Reference counting for physical pages ----
 struct spinlock reflock;
-static int referencecount[PHYSTOP/PGSIZE];   // 用 int，避免下溢回绕
+static int referencecount[PHYSTOP/PGSIZE];   
 
 static inline uint64 pa2idx(uint64 pa) { return pa / PGSIZE; }
 
@@ -65,9 +65,9 @@ freerange(void *pa_start, void *pa_end)
   char *p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
     acquire(&reflock);
-    referencecount[pa2idx((uint64)p)] = 1;
+    referencecount[pa2idx((uint64)p)] = 1;// 初始化 ref=1
     release(&reflock);
-    kfree(p);
+    kfree(p);// kfree 内部 --ref=0 → 加入 freelist
   }
 }
 
@@ -77,7 +77,7 @@ void
 kfree(void *kva)
 {
   uint64 a = (uint64)kva;
-
+// 地址必须是页对齐且在合法范围内
   if((a % PGSIZE) != 0 || (char*)kva < end || a >= PHYSTOP)
     panic("kfree");
 

@@ -356,26 +356,26 @@ uvmclear(pagetable_t pagetable, uint64 va)
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
-  uint64 n, va0, pa0;
-  pte_t *pte;
+  uint64 n, va0, pa0;// n: 本次拷贝的字节数；va0: 对齐后的目标虚拟页首地址；pa0: 该页对应的物理页首地址
+  pte_t *pte;// 指向目标虚拟地址对应的页表项
 
   while(len > 0){
-    va0 = PGROUNDDOWN(dstva);
+    va0 = PGROUNDDOWN(dstva);// 将目标虚拟地址 dstva 向下对齐到页边界（得到该页的起始虚拟地址）
     if(va0 >= MAXVA) return -1;
 
-    pte = walk(pagetable, va0, 0);
+    pte = walk(pagetable, va0, 0);// 在给定页表中查找 va0 对应的 PTE
     if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
 
     // 如果是 COW，先拆
     if(*pte & PTE_COW){
       uint flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
-      uint64 oldpa = PTE2PA(*pte);
-      char *mem = kalloc();
+      uint64 oldpa = PTE2PA(*pte); // 旧物理页地址
+      char *mem = kalloc();// 为“私有化”分配一个新物理页
       if(mem == 0)
         return -1;
-      memmove(mem, (void*)oldpa, PGSIZE);
-
+      memmove(mem, (void*)oldpa, PGSIZE); // 把旧页内容复制到新页，保持语义一致
+ // 解除旧映射并可选释放旧物理页：
       uvmunmap(pagetable, va0, 1, 1);
       if(mappages(pagetable, va0, PGSIZE, (uint64)mem, flags) != 0){
         kfree(mem);
@@ -388,9 +388,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
       if(pte == 0 || (*pte & PTE_V) == 0) return -1;
     }
 
-    pa0 = PTE2PA(*pte);
-    n = PGSIZE - (dstva - va0);
-    if(n > len) n = len;
+    pa0 = PTE2PA(*pte); // 取该页的物理页首地址
+    n = PGSIZE - (dstva - va0);// 计算“本页还能写入的最大字节数”
+    if(n > len) n = len;// 不要超过总剩余要写的字节数
 
     memmove((void*)(pa0 + (dstva - va0)), src, n);
 
