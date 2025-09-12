@@ -55,16 +55,19 @@ kfree(void *pa)
 {
   struct run *r;
 
+  // 校验释放页是否合法：必须页对齐，不能小于内核 end，不能超出 PHYSTOP 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
+  // 用 1 填充整页，
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
-
+// push_off/pop_off 保证 cpuid() 返回正确的 CPU id
+  // 因为 cpuid() 在中断发生时可能读到错误值
   push_off();
-  int id=cpuid();
+  int id=cpuid();// 获取当前 CPU id 
+  // 将该物理页挂回当前 CPU 的 freelist
   acquire(&kmem[id].lock);
   r->next = kmem[id].freelist;
   kmem[id].freelist = r;
@@ -79,28 +82,29 @@ void *
 kalloc(void)
 {
   struct run *r;
-
+// 同样需要关闭中断，保证 cpuid() 返回的 CPU id 稳定
   push_off();
-  int id=cpuid();
+  int id=cpuid();// 获取当前 CPU id 
+  // 1. 优先从本 CPU freelist 分配 
   acquire(&kmem[id].lock);
 
   r = kmem[id].freelist;
   if(r)
-    kmem[id].freelist = r->next;
-  release(&kmem[id].lock);
-  if(!r)
+    kmem[id].freelist = r->next;// 取出一页 
+  release(&kmem[id].lock);//释放锁
+  if(!r)// 2. 如果本地 freelist 为空，则遍历其他 CPU freelist，尝试偷取一页 
   {
      for (int i = 0; i < NCPU; ++i) {
-      if (i == id)
+      if (i == id)// 跳过自己
         continue;
       acquire(&kmem[i].lock);
       r = kmem[i].freelist;
       if (r) {
         kmem[i].freelist = r->next;
-        release(&kmem[i].lock);
+        release(&kmem[i].lock); // 成功偷到一页 
         break;
       }
-      release(&kmem[i].lock);
+      release(&kmem[i].lock); // 没偷到，释放锁继续下一个
     }
   }
   pop_off();
